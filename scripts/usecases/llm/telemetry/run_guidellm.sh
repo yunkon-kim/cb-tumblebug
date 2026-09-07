@@ -12,6 +12,7 @@ PROFILE="sweep"
 MAX_SECONDS=30
 MAX_REQUESTS=""
 RATE=""
+THROUGHPUT_CONCURRENCY=32   # throughput profile's max_concurrency when --rate is not given
 RAMPUP=""
 MODEL=""
 RANDOM_SEED=""
@@ -41,7 +42,9 @@ usage() {
   echo "Options:"
   echo "  --port <PORT>                  Server port. Default: $PORT"
   echo "  --profile <TYPE>               Benchmark profile (synchronous, constant, async, sweep, poisson, concurrent, throughput). Default: $PROFILE"
-  echo "  --rate <RATE>                  Request rate or number of sweep strategies"
+  echo "  --rate <RATE>                  Per-profile load level: sweep=sweep_size, constant/poisson/async=req/s,"
+  echo "                                 concurrent=streams, throughput=max_concurrency (default $THROUGHPUT_CONCURRENCY);"
+  echo "                                 a comma list runs one strategy per value. Required for constant/poisson/async/concurrent."
   echo "  --max-seconds <N>              Maximum duration per target in seconds. Default: $MAX_SECONDS"
   echo "  --max-requests <N>             Maximum number of requests per benchmark"
   echo "  --model <NAME>                 Model name to benchmark (e.g. Qwen/Qwen2.5-1.5B-Instruct)"
@@ -51,7 +54,8 @@ usage() {
   echo ""
   echo "Dataset Options (uses synthetic data if omitted):"
   echo "  --data <SOURCE>                Dataset source (HF dataset ID or file path)"
-  echo "  --data-args <JSON>             Dataset loading arguments (e.g. {\"name\":\"3.0.0\"})"
+  echo "  --data-args <JSON>             HuggingFace load_dataset kwargs (e.g. {\"name\":\"3.0.0\",\"split\":\"test\"});"
+  echo "                                 without a split, the smallest of test/validation/train is used"
   echo "  --data-column-mapper <JSON>    Dataset column mappings (e.g. {\"text_column\":\"article\"})"
   echo "  --data-samples <N>             Number of samples (-1 for all). Default: $DATA_SAMPLES"
   echo "  --processor <NAME>             Tokenizer or processor name"
@@ -114,6 +118,13 @@ if [ ${#TARGET_IPS[@]} -eq 0 ]; then
   echo "Error: At least one target IP address (--ip) is required."
   usage
 fi
+case "$PROFILE" in
+  constant|poisson|async|concurrent)
+    if [ -z "$RATE" ]; then
+      echo "Error: --rate is required for the '$PROFILE' profile."
+      usage
+    fi ;;
+esac
 
 # ==========================================
 # 3. System Requirements & Setup
@@ -124,13 +135,11 @@ install_python_venv() {
   echo "Installing Python3 and venv..."
   sudo apt-get update -qq
   PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "3")
-  # Install base Python and venv support; fail fast on errors
-  sudo apt-get install -y python3 python3-pip python3-venv
-  # Optionally install the version-specific venv package; tolerate absence
-  sudo apt-get install -y "python${PY_VER}-venv" 2>/dev/null || true
+  # venv ships pip via ensurepip; python3-pip would drag in build-essential and dev headers
+  sudo apt-get install -y -qq python3 python3-venv "python${PY_VER}-venv" > /dev/null
 }
 
-if ! command -v python3 >/dev/null 2>&1; then
+if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   install_python_venv
 fi
 
@@ -154,13 +163,14 @@ fi
 
 source venv/bin/activate
 
-# Check if GuideLLM is installed, install only if needed
-if ! python3 -c "import guidellm" 2>/dev/null; then
+# GuideLLM 0.7 replaced `guidellm benchmark` with `guidellm run` and a kind=...,key=value
+# option format; upgrade older installs so the command below matches the installed CLI.
+if guidellm run --help >/dev/null 2>&1; then
+  echo "GuideLLM already installed ✓"
+else
   echo "Installing GuideLLM..."
   pip install -q --upgrade pip
-  pip install -q "guidellm[recommended]"
-else
-  echo "GuideLLM already installed ✓"
+  pip install -q --upgrade "guidellm[recommended]>=0.7"
 fi
 
 # ==========================================
@@ -181,13 +191,46 @@ run_benchmark() {
   # Build the data source argument dynamically
   local DATA_SOURCE
   if [ -n "$DATA" ]; then
-    # If --data is provided, use it directly
-    DATA_SOURCE="$DATA"
+    if [[ "$DATA" == kind=* || "$DATA" == \{* ]]; then
+      DATA_SOURCE="$DATA"
+    elif [ -e "$DATA" ]; then
+      local kind
+      case "${DATA##*.}" in
+        json|jsonl) kind="json_file" ;;
+        csv)        kind="csv_file" ;;
+        parquet)    kind="parquet_file" ;;
+        arrow)      kind="arrow_file" ;;
+        *)          kind="text_file" ;;
+      esac
+      DATA_SOURCE="kind=${kind},path=${DATA}"
+    else
+      # GuideLLM 0.7 needs a single split; loading a multi-split HF dataset without one
+      # fails on a DatasetDict. Pick the smallest useful split (test > validation > train)
+      # from the datasets-server unless --data-args already names one.
+      DATA_SOURCE=$(python3 - "$DATA" "${DATA_ARGS:-{\}}" <<'PY'
+import json, sys, urllib.request
+source, kwargs = sys.argv[1], json.loads(sys.argv[2])
+if "split" not in kwargs:
+    try:
+        with urllib.request.urlopen(f"https://datasets-server.huggingface.co/splits?dataset={source}", timeout=20) as r:
+            splits = [s for s in json.load(r).get("splits", [])
+                      if "name" not in kwargs or s["config"] == kwargs["name"]]
+        names = [s["split"] for s in splits]
+        if names and len(set(names)) > 1:
+            for pref in ("test", "validation", "train"):
+                pick = next((n for n in names if n.startswith(pref)), None)
+                if pick: break
+            kwargs["split"] = pick or names[0]
+    except Exception:
+        pass
+print(json.dumps({"kind": "huggingface", "source": source, **({"load_kwargs": kwargs} if kwargs else {})}))
+PY
+)
+    fi
     echo "------------------------------------------"
     echo "Target:   $TARGET_URL"
     echo "Profile:  $PROFILE (Max $MAX_SECONDS seconds)"
     echo "Data:     $DATA_SOURCE"
-    if [ -n "$DATA_ARGS" ]; then echo "  Args: $DATA_ARGS"; fi
     if [ -n "$DATA_COLUMN_MAPPER" ]; then echo "  Mapper: $DATA_COLUMN_MAPPER"; fi
     if [ "$DATA_SAMPLES" != "-1" ]; then echo "  Samples: $DATA_SAMPLES"; fi
     if [ -n "$PROCESSOR" ]; then echo "  Processor: $PROCESSOR"; fi
@@ -204,51 +247,54 @@ run_benchmark() {
     echo "------------------------------------------"
   fi
 
-  # Build command safely using an array to avoid eval-based injection
-  local -a GUIDELLM_CMD_ARGS=(
-    guidellm
-    benchmark
-    --target "$TARGET_URL"
-    --profile "$PROFILE"
-    --data "$DATA_SOURCE"
-    # Output directly to the final destination directory
-    --output-dir "$RESULT_DIR"
-  )
+  # --rate means a different profile parameter per profile kind; a comma list becomes
+  # one sub-benchmark per value via --override.
+  local PROFILE_SPEC="kind=${PROFILE}" RATE_KEY="" OVERRIDE_KEY=""
+  case "$PROFILE" in
+    sweep)                  RATE_KEY="sweep_size" ;;
+    constant|poisson|async) RATE_KEY="rate";    OVERRIDE_KEY="profile.rate" ;;
+    concurrent)             RATE_KEY="streams"; OVERRIDE_KEY="profile.streams" ;;
+    throughput)             RATE_KEY="max_concurrency" ;;
+  esac
+  local -a OVERRIDE_ARGS=()
+  if [ -n "$RATE" ] && [ -n "$RATE_KEY" ]; then
+    PROFILE_SPEC+=",${RATE_KEY}=${RATE%%,*}"
+    if [[ "$RATE" == *,* ]] && [ -n "$OVERRIDE_KEY" ]; then
+      OVERRIDE_ARGS=(--override "$OVERRIDE_KEY" "$RATE")
+    fi
+  elif [ "$PROFILE" = "throughput" ]; then
+    PROFILE_SPEC+=",max_concurrency=${THROUGHPUT_CONCURRENCY}"
+  fi
+  [ -n "$RAMPUP" ] && PROFILE_SPEC+=",rampup_duration=${RAMPUP}"
 
-  # Add optional arguments only if they are set
-  if [ -n "$MAX_SECONDS" ]; then
-    GUIDELLM_CMD_ARGS+=(--max-seconds "$MAX_SECONDS")
-  fi
-  if [ -n "$MAX_REQUESTS" ]; then
-    GUIDELLM_CMD_ARGS+=(--max-requests "$MAX_REQUESTS")
-  fi
-  if [ -n "$RATE" ]; then
-    GUIDELLM_CMD_ARGS+=(--rate "$RATE")
-  fi
-  if [ -n "$RAMPUP" ]; then
-    GUIDELLM_CMD_ARGS+=(--rampup "$RAMPUP")
-  fi
-  if [ -n "$MODEL" ]; then
-    GUIDELLM_CMD_ARGS+=(--model "$MODEL")
-  fi
-  if [ -n "$RANDOM_SEED" ]; then
-    GUIDELLM_CMD_ARGS+=(--random-seed "$RANDOM_SEED")
-  fi
-  if [ -n "$OUTPUTS" ]; then
-    GUIDELLM_CMD_ARGS+=(--outputs "$OUTPUTS")
-  fi
-  if [ -n "$DATA_ARGS" ]; then
-    GUIDELLM_CMD_ARGS+=(--data-args "$DATA_ARGS")
-  fi
+  local BACKEND_SPEC="kind=openai_http,target=${TARGET_URL}"
+  [ -n "$MODEL" ] && BACKEND_SPEC+=",model=${MODEL}"
+
+  local -a GUIDELLM_CMD_ARGS=(
+    guidellm run
+    --backend "$BACKEND_SPEC"
+    --profile "$PROFILE_SPEC"
+    --data "$DATA_SOURCE"
+    --disable-progress
+  )
+  [ ${#OVERRIDE_ARGS[@]} -gt 0 ] && GUIDELLM_CMD_ARGS+=("${OVERRIDE_ARGS[@]}")
+  [ -n "$MAX_SECONDS" ]  && GUIDELLM_CMD_ARGS+=(--constraint "kind=max_duration,seconds=${MAX_SECONDS}")
+  [ -n "$MAX_REQUESTS" ] && GUIDELLM_CMD_ARGS+=(--constraint "kind=max_requests,count=${MAX_REQUESTS}")
+  [ -n "$RANDOM_SEED" ]  && GUIDELLM_CMD_ARGS+=(--seed "kind=static,value=${RANDOM_SEED}")
+  [ -n "$PROCESSOR" ]    && GUIDELLM_CMD_ARGS+=(--tokenizer "kind=huggingface_auto,model=${PROCESSOR}")
+  [ "$DATA_SAMPLES" != "-1" ] && GUIDELLM_CMD_ARGS+=(--data-loader "kind=pytorch,samples=${DATA_SAMPLES}")
   if [ -n "$DATA_COLUMN_MAPPER" ]; then
-    GUIDELLM_CMD_ARGS+=(--data-column-mapper "$DATA_COLUMN_MAPPER")
+    # Accept the plain {"text_column":"prompt"} form and wrap it into the mapper config
+    local MAPPER_SPEC="$DATA_COLUMN_MAPPER"
+    if [[ "$MAPPER_SPEC" == \{* ]] && [[ "$MAPPER_SPEC" != *'"kind"'* ]]; then
+      MAPPER_SPEC=$(python3 -c 'import json,sys; print(json.dumps({"kind":"generative_column_mapper","column_mappings":json.loads(sys.argv[1])}))' "$MAPPER_SPEC")
+    fi
+    GUIDELLM_CMD_ARGS+=(--data-column-mapper "$MAPPER_SPEC")
   fi
-  if [ "$DATA_SAMPLES" != "-1" ]; then
-    GUIDELLM_CMD_ARGS+=(--data-samples "$DATA_SAMPLES")
-  fi
-  if [ -n "$PROCESSOR" ]; then
-    GUIDELLM_CMD_ARGS+=(--processor "$PROCESSOR")
-  fi
+  local fmt
+  for fmt in $(echo "${OUTPUTS:-csv,json}" | tr ',' ' '); do
+    GUIDELLM_CMD_ARGS+=(--output "kind=${fmt},path=${RESULT_DIR}/benchmarks.${fmt}")
+  done
 
   # Run the command and capture its exit code
   if ! "${GUIDELLM_CMD_ARGS[@]}"; then
@@ -313,24 +359,20 @@ for pid in "${!PIDS[@]}"; do
   ip="${PIDS[$pid]}"
   
   if wait "$pid"; then
-    STATUS_MSG="\033[1;32m✓ COMPLETED\033[0m"
+    STATUS_MSG="COMPLETED"
   else
-    STATUS_MSG="\033[1;31m✗ FAILED\033[0m"
+    STATUS_MSG="FAILED"
     FAILED=$((FAILED + 1))
   fi
-  
-  echo -e "\n\033[1;36m======================================================================\033[0m"
-  echo -e "  $STATUS_MSG : \033[1;37m$ip\033[0m "
-  echo -e "\033[1;36m======================================================================\033[0m"
-  
+
+  echo ""
+  echo "[$STATUS_MSG] $ip"
   if [ -f "${LOG_FILES[$ip]}" ]; then
     sed "s/^/[ $ip ] /" "${LOG_FILES[$ip]}"
     rm -f "${LOG_FILES[$ip]}"
   else
     echo "[ $ip ] (No log output found)"
   fi
-  
-  echo -e "\033[1;36m======================================================================\033[0m\n"
 done
 
 # ==========================================
@@ -340,24 +382,13 @@ done
 # Collect all result directories from this run
 RESULT_DIRS=($(ls -1d "$WORK_DIR"/bench_${RUN_TIMESTAMP}_* 2>/dev/null || true))
 
-echo -e "\n\033[1;35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "\033[1;35m  🏆 [ FINAL SUMMARY ] Benchmark Execution Results\033[0m"
-echo -e "\033[1;35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "  Total Targets : $TOTAL VM(s)"
-echo -e "  Success       : \033[1;32m$((TOTAL - FAILED))\033[0m"
-if [ $FAILED -gt 0 ]; then
-  echo -e "  Failed        : \033[1;31m$FAILED\033[0m"
-else
-  echo -e "  Failed        : 0"
-fi
-echo -e "\033[1;35m──────────────────────────────────────────────────────────────────────\033[0m"
+echo ""
+echo "Summary: $TOTAL target(s), $((TOTAL - FAILED)) succeeded, $FAILED failed"
 
 if [ ${#RESULT_DIRS[@]} -gt 0 ]; then
-  echo -e "  \033[1;36m📂 Saved Directories:\033[0m"
   for d in "${RESULT_DIRS[@]}"; do
-    echo -e "   - $(basename "$d")"
+    echo "  $(basename "$d")"
   done
-  echo -e "\033[1;35m──────────────────────────────────────────────────────────────────────\033[0m"
 
   # Compress all result directories into a single zip for bulk download
   ZIP_NAME="bench_${RUN_TIMESTAMP}_all.zip"
@@ -367,12 +398,12 @@ if [ ${#RESULT_DIRS[@]} -gt 0 ]; then
     sudo apt-get update -qq
     sudo apt-get install -y zip -qq
   fi
-  echo -e "  \033[1;36m📦 Compressing all results...\033[0m"
   (cd "$WORK_DIR" && zip -r "$ZIP_NAME" bench_${RUN_TIMESTAMP}_*/ > /dev/null)
   ZIP_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
-  echo -e "  Archive : $ZIP_NAME ($ZIP_SIZE)"
+  echo "  Archive: $ZIP_NAME ($ZIP_SIZE)"
   echo "\$\$FILEPATH[Download All Results (zip)]($ZIP_FILE)"
 else
-  echo -e "  \033[1;33m⚠ No result files generated.\033[0m"
+  echo "  No result files generated."
 fi
-echo -e "\033[1;35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n"
+
+[ $FAILED -eq 0 ] || exit 1
