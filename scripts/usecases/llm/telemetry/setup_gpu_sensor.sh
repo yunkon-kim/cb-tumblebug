@@ -120,6 +120,18 @@ $(echo -e "$SCRAPE_URLS")
   ]
 EOF
 
+if [ "$GPU_TYPE" = "amd" ]; then
+  cat <<EOF >> ~/telegraf_config/telegraf.conf
+
+# AMD exporter labels GPUs as gpu_id; DCGM uses gpu. Normalize so the dashboard's GPU filter works for both.
+[[processors.rename]]
+  namepass = ["gpu_*"]
+  [[processors.rename.replace]]
+    tag = "gpu_id"
+    dest = "gpu"
+EOF
+fi
+
 # Append Ollama loaded-model inventory if Ollama is running
 if [ "$OLLAMA_RUNNING" = "true" ]; then
   cat <<EOF >> ~/telegraf_config/telegraf.conf
