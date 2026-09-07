@@ -7,6 +7,9 @@ set -e
 # 1. Default Configuration
 # ==========================================
 declare -a TARGET_IPS
+declare -a TARGET_IDS      # optional node names paired with TARGET_IPS (result labels)
+declare -a LABELS          # key=value pairs recorded in the results
+CONCURRENCY_SWEEP=""       # START:END:STEP, runs the concurrent profile once per step
 PORT="8000"
 PROFILE="sweep"
 MAX_SECONDS=30
@@ -40,6 +43,10 @@ usage() {
   echo "  --ip <IP1> [IP2 ...]   Target GPU VM IP address(es) (space-separated)"
   echo ""
   echo "Options:"
+  echo "  --ids <ID1> [ID2 ...]          Node names paired with --ip, used to label results (default: IP)"
+  echo "  --label <key=value>            Extra label recorded in the results (repeatable)"
+  echo "  --concurrency-sweep <S:E:STEP> Run the concurrent profile at S, S+STEP, ..., E (e.g. 10:150:10),"
+  echo "                                 --max-seconds applies to each step"
   echo "  --port <PORT>                  Server port. Default: $PORT"
   echo "  --profile <TYPE>               Benchmark profile (synchronous, constant, async, sweep, poisson, concurrent, throughput). Default: $PROFILE"
   echo "  --rate <RATE>                  Per-profile load level: sweep=sweep_size, constant/poisson/async=req/s,"
@@ -73,6 +80,9 @@ usage() {
   echo "  # Multiple targets"
   echo "  $1 --ip 1.1.1.1 2.2.2.2 --max-seconds 120"
   echo ""
+  echo "  # Concurrency sweep 10..150 step 10, 60s per step, results labeled by node name"
+  echo "  $1 --ip 1.1.1.1 2.2.2.2 --ids gpu-a gpu-b --concurrency-sweep 10:150:10 --max-seconds 60"
+  echo ""
   echo "  # HuggingFace dataset"
   echo "  $1 --ip 1.1.1.1 \\"
   echo "    --data 'abisee/cnn_dailymail' \\"
@@ -92,6 +102,16 @@ while [[ "$#" -gt 0 ]]; do
             done
             continue  # skip the trailing shift
             ;;
+        --ids)
+            shift
+            while [[ "$#" -gt 0 ]] && [[ "$1" != --* ]]; do
+                TARGET_IDS+=("$1")
+                shift
+            done
+            continue
+            ;;
+        --label) LABELS+=("$2"); shift ;;
+        --concurrency-sweep) CONCURRENCY_SWEEP="$2"; shift ;;
         --port) PORT="$2"; shift ;;
         --profile) PROFILE="$2"; shift ;;
         --max-seconds) MAX_SECONDS="$2"; shift ;;
@@ -118,6 +138,20 @@ if [ ${#TARGET_IPS[@]} -eq 0 ]; then
   echo "Error: At least one target IP address (--ip) is required."
   usage
 fi
+if [ ${#TARGET_IDS[@]} -gt 0 ] && [ ${#TARGET_IDS[@]} -ne ${#TARGET_IPS[@]} ]; then
+  echo "Error: --ids must list one name per --ip (${#TARGET_IDS[@]} ids, ${#TARGET_IPS[@]} ips)."
+  exit 1
+fi
+
+if [ -n "$CONCURRENCY_SWEEP" ]; then
+  if ! [[ "$CONCURRENCY_SWEEP" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]] || [ "${BASH_REMATCH[3]}" -eq 0 ]; then
+    echo "Error: --concurrency-sweep must be START:END:STEP (e.g. 10:150:10)."
+    exit 1
+  fi
+  PROFILE="concurrent"
+  RATE=$(seq -s, "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[2]}")
+fi
+
 case "$PROFILE" in
   constant|poisson|async|concurrent)
     if [ -z "$RATE" ]; then
@@ -180,12 +214,43 @@ fi
 # Shared run timestamp (all VMs in the same run share this)
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
+# Flatten benchmarks.json into CSV: one row per strategy, labels as columns,
+# TTFT/TPOT/ITL/latency/throughput as mean, median, p90, p95, p99 of successful requests.
+write_summary_csv() {
+  python3 - "$1" <<'PY'
+import csv, json, sys
+j = json.load(open(sys.argv[1]))
+labels = j["config"]["metadata"].get("labels") or {}
+stats = ("mean", "median", "p90", "p95", "p99")
+metrics = {"ttft_ms": "time_to_first_token_ms", "tpot_ms": "time_per_output_token_ms",
+           "itl_ms": "inter_token_latency_ms", "request_latency_s": "request_latency",
+           "output_tok_per_s": "output_tokens_per_second", "req_per_s": "requests_per_second"}
+w = None
+for b in j["benchmarks"]:
+    st, m, rt = b["config"]["strategy"], b["metrics"], b["metrics"]["request_totals"]
+    row = {**labels, "model": b["config"]["backend"].get("model", ""), "profile": st["type_"],
+           "concurrency": st.get("max_concurrency") or st.get("streams") or st.get("rate"),
+           "duration_s": round(b["duration"], 1),
+           "req_successful": rt["successful"], "req_incomplete": rt["incomplete"], "req_errored": rt["errored"],
+           "prompt_tokens_mean": round(m["prompt_token_count"]["successful"]["mean"], 1),
+           "output_tokens_mean": round(m["output_token_count"]["successful"]["mean"], 1)}
+    for col, key in metrics.items():
+        d = m[key]["successful"]
+        for s in stats:
+            row[f"{col}_{s}"] = round(d["percentiles"][s] if s.startswith("p") else d[s], 3)
+    if w is None:
+        w = csv.DictWriter(sys.stdout, fieldnames=list(row)); w.writeheader()
+    w.writerow(row)
+PY
+}
+
 # Function to run benchmark for a single target IP
 run_benchmark() {
   local TARGET_IP="$1"
+  local TARGET_NAME="${2:-$1}"
   local TARGET_URL="http://${TARGET_IP}:${PORT}"
   # Create a unique directory for this specific run
-  local RESULT_DIR="$WORK_DIR/bench_${RUN_TIMESTAMP}_${TARGET_IP}"
+  local RESULT_DIR="$WORK_DIR/bench_${RUN_TIMESTAMP}_${TARGET_NAME}"
   mkdir -p "$RESULT_DIR"
 
   # Build the data source argument dynamically
@@ -228,7 +293,7 @@ PY
 )
     fi
     echo "------------------------------------------"
-    echo "Target:   $TARGET_URL"
+    echo "Target:   $TARGET_NAME ($TARGET_URL)"
     echo "Profile:  $PROFILE (Max $MAX_SECONDS seconds)"
     echo "Data:     $DATA_SOURCE"
     if [ -n "$DATA_COLUMN_MAPPER" ]; then echo "  Mapper: $DATA_COLUMN_MAPPER"; fi
@@ -240,7 +305,7 @@ PY
     # If --data is not provided, construct it from synthetic data options
     DATA_SOURCE="kind=synthetic_text,prompt_tokens=${INPUT_LEN},output_tokens=${OUTPUT_LEN}"
     echo "------------------------------------------"
-    echo "Target:  $TARGET_URL"
+    echo "Target:  $TARGET_NAME ($TARGET_URL)"
     echo "Profile: $PROFILE (Max $MAX_SECONDS seconds)"
     echo "Data:    $INPUT_LEN prompt tokens / $OUTPUT_LEN output tokens (synthetic)"
     echo "Output:  $RESULT_DIR/"
@@ -278,6 +343,10 @@ PY
     --disable-progress
   )
   [ ${#OVERRIDE_ARGS[@]} -gt 0 ] && GUIDELLM_CMD_ARGS+=("${OVERRIDE_ARGS[@]}")
+  local lbl
+  for lbl in "node=${TARGET_NAME}" "ip=${TARGET_IP}" "${LABELS[@]}"; do
+    GUIDELLM_CMD_ARGS+=(--label "$lbl")
+  done
   [ -n "$MAX_SECONDS" ]  && GUIDELLM_CMD_ARGS+=(--constraint "kind=max_duration,seconds=${MAX_SECONDS}")
   [ -n "$MAX_REQUESTS" ] && GUIDELLM_CMD_ARGS+=(--constraint "kind=max_requests,count=${MAX_REQUESTS}")
   [ -n "$RANDOM_SEED" ]  && GUIDELLM_CMD_ARGS+=(--seed "kind=static,value=${RANDOM_SEED}")
@@ -304,6 +373,12 @@ PY
     return 1 # Explicitly return a failure code
   fi
 
+  # One row per strategy with the latency metrics needed for concurrency plots
+  if [ -f "$RESULT_DIR/benchmarks.json" ]; then
+    write_summary_csv "$RESULT_DIR/benchmarks.json" > "$RESULT_DIR/summary.csv" \
+      || echo "Warning: could not build summary.csv" >&2
+  fi
+
   # Report only files that were actually generated
   local GENERATED_FILES=()
   for ext in json csv html; do
@@ -324,6 +399,7 @@ PY
       echo "\$\$FILEPATH[Results ${ext^^}]($RESULT_DIR/benchmarks.$ext)"
     fi
   done
+  [ -f "$RESULT_DIR/summary.csv" ] && echo "\$\$FILEPATH[Summary CSV]($RESULT_DIR/summary.csv)"
   echo "------------------------------------------"
 }
 
@@ -331,7 +407,8 @@ PY
 echo "=========================================="
 echo "GuideLLM Benchmark"
 echo "Targets: ${#TARGET_IPS[@]} node(s)"
-for ip in "${TARGET_IPS[@]}"; do echo "  - $ip"; done
+for i in "${!TARGET_IPS[@]}"; do echo "  - ${TARGET_IDS[$i]:-${TARGET_IPS[$i]}} (${TARGET_IPS[$i]})"; done
+[ -n "$CONCURRENCY_SWEEP" ] && echo "Concurrency sweep: $RATE (${MAX_SECONDS}s each)"
 echo "=========================================="
 
 TOTAL=${#TARGET_IPS[@]}
@@ -341,13 +418,15 @@ declare -A PIDS          # PID -> IP mapping
 declare -A LOG_FILES     # IP -> log file mapping
 
 echo ""
-for ip in "${TARGET_IPS[@]}"; do
-  LOG_FILE="$WORK_DIR/.bench_log_${RUN_TIMESTAMP}_${ip}.log"
-  LOG_FILES["$ip"]="$LOG_FILE"
+for i in "${!TARGET_IPS[@]}"; do
+  ip="${TARGET_IPS[$i]}"
+  name="${TARGET_IDS[$i]:-$ip}"
+  LOG_FILE="$WORK_DIR/.bench_log_${RUN_TIMESTAMP}_${name}.log"
+  LOG_FILES["$name"]="$LOG_FILE"
 
-  echo "  Starting benchmark for $ip ..."
-  run_benchmark "$ip" > "$LOG_FILE" 2>&1 &
-  PIDS[$!]="$ip"
+  echo "  Starting benchmark for $name ($ip) ..."
+  run_benchmark "$ip" "$name" > "$LOG_FILE" 2>&1 &
+  PIDS[$!]="$name"
 done
 
 echo ""
@@ -389,6 +468,11 @@ if [ ${#RESULT_DIRS[@]} -gt 0 ]; then
   for d in "${RESULT_DIRS[@]}"; do
     echo "  $(basename "$d")"
   done
+
+  # Merge per-target summaries so one CSV holds every node and concurrency step
+  SUMMARY_FILE="$WORK_DIR/bench_${RUN_TIMESTAMP}_summary.csv"
+  awk 'FNR==1 && NR!=1 {next} {print}' "$WORK_DIR"/bench_${RUN_TIMESTAMP}_*/summary.csv > "$SUMMARY_FILE" 2>/dev/null \
+    && echo "\$\$FILEPATH[Summary CSV (all targets)]($SUMMARY_FILE)"
 
   # Compress all result directories into a single zip for bulk download
   ZIP_NAME="bench_${RUN_TIMESTAMP}_all.zip"
