@@ -684,8 +684,10 @@ CUDA_ENV
     echo ""
     echo "Checking for NVSwitch/multi-GPU topology..."
 
-    NVSWITCH_PCI=$(sudo lspci 2>/dev/null | grep -i -E "nvswitch|nvlink" || true)
-    [ -z "$NVSWITCH_PCI" ] && NVSWITCH_PCI=$(sudo lspci -n 2>/dev/null | grep -i "10de:2[23]" || true)
+    # Only an actual NVSwitch device counts. PCI-ID prefixes and GPU counts are not
+    # reliable: A10 (10de:2236) and H100 (10de:233x) share the NVSwitch ID prefix, and
+    # 4+ PCIe GPUs is common on VMs without NVSwitch.
+    NVSWITCH_PCI=$(sudo lspci 2>/dev/null | grep -i "nvswitch" || true)
     NVSWITCH_DEV=$(ls /dev/nvidia-nvswitch* 2>/dev/null || true)
     GPU_COUNT=$(sudo lspci 2>/dev/null | grep -i nvidia | grep -i -c "3d controller\|vga compatible") || GPU_COUNT=0
     [ "$GPU_COUNT" -eq 0 ] && command -v nvidia-smi &>/dev/null && GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -c "^GPU") || true
@@ -700,11 +702,9 @@ CUDA_ENV
     elif [ -n "$NVSWITCH_TOPO" ]; then
         NEED_FABRIC_MANAGER=true
         echo "  NVSwitch detected via nvidia-smi topology."
-    elif [ "$GPU_COUNT" -ge 4 ] 2>/dev/null; then
-        NEED_FABRIC_MANAGER=true
-        echo "  ${GPU_COUNT} GPUs detected (likely HGX system with NVSwitch)."
     fi
 
+    NVSWITCH_FOUND=$NEED_FABRIC_MANAGER
     if [ "$NEED_FABRIC_MANAGER" = true ]; then
         DRIVER_MAJOR=$(dpkg -l 2>/dev/null | grep "^ii" | awk '{print $2}' | grep -oP "^nvidia-driver-\K[0-9]+" | sort -rn | head -1 || true)
         [ -z "$DRIVER_MAJOR" ] && command -v nvidia-smi &>/dev/null && \
@@ -714,6 +714,18 @@ CUDA_ENV
         else
             FM_PKG="nvidia-fabricmanager"
         fi
+        # The Ubuntu-archive fabricmanager (-server flavor) conflicts with the NVIDIA-repo
+        # driver and apt resolves it by removing the driver. Install only a build that
+        # matches the installed driver version.
+        DRIVER_VER=$(dpkg-query -W -f='${Version}' "nvidia-driver-${DRIVER_MAJOR}" 2>/dev/null | cut -d- -f1)
+        FM_VER=$(apt-cache policy "$FM_PKG" 2>/dev/null | awk '/Candidate:/{print $2}' | cut -d- -f1)
+        if [ -n "$DRIVER_VER" ] && [ "$FM_VER" != "$DRIVER_VER" ]; then
+            echo "  Skipping ${FM_PKG}: available ${FM_VER:-none} does not match driver ${DRIVER_VER}."
+            NEED_FABRIC_MANAGER=false
+        fi
+    fi
+
+    if [ "$NEED_FABRIC_MANAGER" = true ]; then
         echo "  Installing ${FM_PKG}..."
         set +e
         "${APT_INSTALL[@]}" "$FM_PKG" 2>&1 | tail -10
@@ -727,7 +739,7 @@ CUDA_ENV
             echo "  WARNING: Failed to install ${FM_PKG}. Install manually after reboot:"
             echo "    sudo apt install ${FM_PKG} && sudo systemctl enable --now nvidia-fabricmanager"
         fi
-    else
+    elif [ "$NVSWITCH_FOUND" != true ]; then
         [ "$GPU_COUNT" -gt 1 ] 2>/dev/null && \
             echo "  ${GPU_COUNT} GPUs detected (PCIe, no NVSwitch). Fabric Manager not needed." || \
             echo "  Single GPU detected. Fabric Manager not needed."

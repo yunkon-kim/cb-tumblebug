@@ -59,7 +59,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 elif command -v rocm-smi >/dev/null 2>&1; then
   echo "Found AMD GPU(s):"
   rocm-smi --showproductname
-  GPU_COUNT=$(rocm-smi -i | grep -c "GPU\[")
+  GPU_COUNT=$(rocm-smi -i | grep -oE '^GPU\[[0-9]+\]' | sort -u | wc -l)
   GPU_TYPE="amd"
   echo "Detected $GPU_COUNT AMD GPU(s)"
 else

@@ -16,14 +16,16 @@ set -e
 MODEL_NAME=""
 HF_TOKEN="${HF_TOKEN:-}"  # inherit from env if already set (avoids CLI arg exposure)
 VLLM_PORT="8000"
+TP_SIZE=""
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --model)    MODEL_NAME="${2:?Error: --model requires a value}";    shift 2 ;;
     --hf-token) HF_TOKEN="${2?Error: --hf-token requires an argument}";   shift 2 ;;
     --port)     VLLM_PORT="${2:?Error: --port requires a value}";      shift 2 ;;
+    --tp)       TP_SIZE="${2:?Error: --tp requires a value}";          shift 2 ;;
     -h|--help)
-      echo "Usage: bash setupBenchmarkTarget.sh [--model MODEL] [--hf-token TOKEN] [--port PORT]"
+      echo "Usage: bash setupBenchmarkTarget.sh [--model MODEL] [--hf-token TOKEN] [--port PORT] [--tp N]"
       exit 0 ;;
     *)
       # Backward compatibility: treat first non-flag arg as model name
@@ -66,7 +68,7 @@ echo "✓ vLLM installed"
 
 # Step 2: Model Serving
 echo "[2/3] Starting model: $MODEL_NAME"
-bash "$tmp_serve" --model "$MODEL_NAME" --port "$VLLM_PORT" || { echo "✗ Model start failed"; rm -f "$tmp_serve"; exit 1; }
+bash "$tmp_serve" --model "$MODEL_NAME" --port "$VLLM_PORT" ${TP_SIZE:+--tp "$TP_SIZE"} || { echo "✗ Model start failed"; rm -f "$tmp_serve"; exit 1; }
 rm -f "$tmp_serve"
 
 # Health check
