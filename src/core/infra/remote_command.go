@@ -1776,6 +1776,33 @@ func processCommand(command, nsId, infraId, nodeId string, nodeIndex int) (strin
 			if err != nil {
 				return "", fmt.Errorf("built-in function %s error: %s", funcName, err.Error())
 			}
+		} else if strings.EqualFold(funcName, "GetNodeIds") {
+			// Node IDs of the target Infra, same order and label filtering as GetPublicIPs
+			// Example: $$Func(GetNodeIds(separator=' ', label='accelerator=gpu'))
+			targetInfraId := infraId
+			if val, ok := params["target"]; ok && !strings.EqualFold(val, "this") {
+				targetInfraId = val
+			}
+			separator := ","
+			if sep, ok := params["separator"]; ok {
+				separator = sep
+			}
+			prefix := ""
+			if pre, ok := params["prefix"]; ok {
+				prefix = pre
+			}
+			postfix := ""
+			if post, ok := params["postfix"]; ok {
+				postfix = post
+			}
+			labelSelector := ""
+			if lbl, ok := params["label"]; ok {
+				labelSelector = lbl
+			}
+			replacement, err = replaceWithNodeIds(nsId, targetInfraId, separator, prefix, postfix, labelSelector)
+			if err != nil {
+				return "", fmt.Errorf("built-in function %s error: %s", funcName, err.Error())
+			}
 		} else if strings.EqualFold(funcName, "AssignTask") {
 			// Logic for AssignTask function
 			taskListParam, ok := params["task"]
@@ -1944,6 +1971,32 @@ func replaceWithPublicIPs(nsId, infraId, separator, prefix, postfix, labelSelect
 		ips[i] = prefix + nodeStatus.PublicIp + postfix
 	}
 	return strings.Join(ips, separator), nil
+}
+
+// replaceWithNodeIds returns the Node ID list of the target Infra, in the same order as
+// replaceWithPublicIPs so the two lists can be paired index by index.
+func replaceWithNodeIds(nsId, infraId, separator, prefix, postfix, labelSelector string) (string, error) {
+	infraStatus, err := GetInfraStatus(nsId, infraId)
+	if err != nil {
+		return "", err
+	}
+	allowedIds := map[string]bool{}
+	if labelSelector != "" {
+		filteredNodeIds, err := getNodeIdsByLabel(nsId, infraId, labelSelector)
+		if err != nil {
+			return "", fmt.Errorf("label filtering failed: %w", err)
+		}
+		for _, id := range filteredNodeIds {
+			allowedIds[id] = true
+		}
+	}
+	var ids []string
+	for _, nodeStatus := range infraStatus.Node {
+		if labelSelector == "" || allowedIds[nodeStatus.Id] {
+			ids = append(ids, prefix+nodeStatus.Id+postfix)
+		}
+	}
+	return strings.Join(ids, separator), nil
 }
 
 // replaceWithPrivateIPs returns the private IP list of VMs in the target Infra.
