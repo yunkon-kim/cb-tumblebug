@@ -135,7 +135,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(DCGM_FI_DEV_GPU_UTIL{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\"}, gpu)",
+        "query": "label_values({__name__=~\"DCGM_FI_DEV_GPU_UTIL|gpu_gfx_activity\",job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\"}, gpu)",
         "includeAll": true,
         "multi": true,
         "current": {
@@ -226,7 +226,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
       },
       "targets": [
         {
-          "expr": "avg(DCGM_FI_DEV_GPU_UTIL{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"})",
+          "expr": "avg(DCGM_FI_DEV_GPU_UTIL{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} or gpu_gfx_activity{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"})",
           "refId": "A"
         }
       ]
@@ -247,7 +247,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
       },
       "targets": [
         {
-          "expr": "100 * avg(DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} / (DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} + DCGM_FI_DEV_FB_FREE{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}))",
+          "expr": "100 * avg(DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} / (DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} + DCGM_FI_DEV_FB_FREE{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}) or gpu_used_vram{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} / gpu_total_vram{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"})",
           "refId": "A"
         }
       ]
@@ -268,7 +268,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
       },
       "targets": [
         {
-          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_GPU_UTIL{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"})",
+          "expr": "avg by (instance, gpu) (DCGM_FI_DEV_GPU_UTIL{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} or gpu_gfx_activity{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"})",
           "legendFormat": "{{instance}} gpu{{gpu}}",
           "refId": "A"
         }
@@ -290,7 +290,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}",
+          "expr": "DCGM_FI_DEV_FB_USED{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} or gpu_used_vram{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}",
           "legendFormat": "{{instance}} gpu{{gpu}}",
           "refId": "A"
         }
@@ -312,7 +312,7 @@ cat <<'EOF' > grafana/dashboards/llm-monitoring-overview.json
       },
       "targets": [
         {
-          "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}",
+          "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"} or gpu_average_package_power{job=\"gpu_vm_telegraf_gateway\",instance=~\"$instance\",gpu=~\"$gpu\"}",
           "legendFormat": "{{instance}} gpu{{gpu}}",
           "refId": "A"
         }
