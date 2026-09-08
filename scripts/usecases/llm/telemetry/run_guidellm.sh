@@ -177,6 +177,15 @@ if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   install_python_venv
 fi
 
+# huggingface.co is unreachable from some regions (e.g. Alibaba China); use the mirror there.
+HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+if ! curl -s -o /dev/null -m 10 "$HF_ENDPOINT/api/models/gpt2" && curl -s -o /dev/null -m 10 https://hf-mirror.com/api/models/gpt2; then
+  HF_ENDPOINT="https://hf-mirror.com"
+  export HF_HUB_DISABLE_XET=1   # Xet CAS downloads bypass the mirror and fail with 401
+  echo "huggingface.co unreachable; using $HF_ENDPOINT"
+fi
+export HF_ENDPOINT
+
 WORK_DIR="$HOME/guidellm_bench"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
@@ -272,15 +281,33 @@ run_benchmark() {
       # GuideLLM 0.7 needs a single split; loading a multi-split HF dataset without one
       # fails on a DatasetDict. Pick the smallest useful split (test > validation > train)
       # from the datasets-server unless --data-args already names one.
-      DATA_SOURCE=$(python3 - "$DATA" "${DATA_ARGS:-{\}}" <<'PY'
-import json, sys, urllib.request
-source, kwargs = sys.argv[1], json.loads(sys.argv[2])
+      DATA_SOURCE=$(python3 - "$DATA" "${DATA_ARGS:-{\}}" "$HF_ENDPOINT" <<'PY'
+import json, re, sys, urllib.request
+source, kwargs, endpoint = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+def get(url):
+    with urllib.request.urlopen(url, timeout=20) as r:
+        return json.load(r)
+def split_names():
+    try:  # datasets-server knows every split, but it has no mirror
+        splits = get(f"https://datasets-server.huggingface.co/splits?dataset={source}").get("splits", [])
+        return [s["split"] for s in splits if "name" not in kwargs or s["config"] == kwargs["name"]]
+    except Exception:
+        pass
+    info = get(f"{endpoint}/api/datasets/{source}")  # dataset card lists configs and data files
+    names = []
+    for cfg in (info.get("cardData") or {}).get("configs") or []:
+        if "name" in kwargs and cfg.get("config_name") != kwargs["name"]:
+            continue
+        names += [f["split"] for f in cfg.get("data_files", []) if isinstance(f, dict) and f.get("split")]
+    if not names:
+        for f in info.get("siblings", []):
+            m = re.match(r"(?:data/)?([A-Za-z0-9_]+?)(?:-\d{5}-of-\d{5}\S*)?\.(parquet|jsonl?|csv|arrow)$", f["rfilename"])
+            if m and m.group(1) not in names:
+                names.append(m.group(1))
+    return names
 if "split" not in kwargs:
     try:
-        with urllib.request.urlopen(f"https://datasets-server.huggingface.co/splits?dataset={source}", timeout=20) as r:
-            splits = [s for s in json.load(r).get("splits", [])
-                      if "name" not in kwargs or s["config"] == kwargs["name"]]
-        names = [s["split"] for s in splits]
+        names = split_names()
         if names and len(set(names)) > 1:
             for pref in ("test", "validation", "train"):
                 pick = next((n for n in names if n.startswith(pref)), None)
