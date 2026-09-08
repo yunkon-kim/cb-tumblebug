@@ -43,6 +43,7 @@ HF_TOKEN="${HF_TOKEN:-}"  # inherit from env if already set (avoids CLI arg expo
 GPU_UTIL=""               # empty = vLLM default (~0.9)
 CTX_LEN=""                # empty = model default
 API_KEY=""
+TP_SIZE=""                # empty = use every GPU on the VM
 CHECK_ONLY="false"
 
 usage() {
@@ -58,6 +59,7 @@ usage() {
   echo "  --gpu-util FLOAT    GPU memory utilization 0.0-1.0 (default: vLLM default)"
   echo "  --ctx-len N         Max context length / max-model-len (default: model default)"
   echo "  --api-key KEY       API key for the vLLM server (default: none)"
+  echo "  --tp N              Tensor parallel size / GPUs to use (default: all GPUs on the VM)"
   echo "  --tool-parser NAME  Tool-call parser (default: guessed from the model name)"
   echo "  --no-tools          Do not enable tool calling"
   echo "  --check-access      Only verify the model is reachable on HuggingFace, then exit"
@@ -78,6 +80,7 @@ while [[ "$#" -gt 0 ]]; do
     --gpu-util) GPU_UTIL="${2?Error: --gpu-util requires an argument}"; shift 2 ;;
     --ctx-len)  CTX_LEN="${2?Error: --ctx-len requires an argument}";   shift 2 ;;
     --api-key)  API_KEY="${2?Error: --api-key requires an argument}";   shift 2 ;;
+    --tp)       TP_SIZE="${2:?Error: --tp requires a value}";           shift 2 ;;
     --tool-parser) TOOL_PARSER="${2?Error: --tool-parser requires an argument}"; shift 2 ;;
     --no-tools) ENABLE_TOOLS="false";                                   shift 1 ;;
     --check-access) CHECK_ONLY="true";                                  shift 1 ;;
@@ -366,6 +369,18 @@ VLLM_CMD_ARGS=(
 [ -n "$GPU_UTIL" ] && VLLM_CMD_ARGS+=(--gpu-memory-utilization "$GPU_UTIL")
 [ -n "$CTX_LEN" ]  && VLLM_CMD_ARGS+=(--max-model-len "$CTX_LEN")
 [ -n "$API_KEY" ]  && VLLM_CMD_ARGS+=(--api-key "$API_KEY")
+# Use every GPU on the VM unless --tp narrows it; a benchmark should reflect the whole VM.
+if [ -z "$TP_SIZE" ]; then
+  if [ "$GPU_TYPE" = "nvidia" ]; then
+    TP_SIZE=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU')
+  else
+    TP_SIZE=$(rocm-smi --showid 2>/dev/null | grep -oE '^GPU\[[0-9]+\]' | sort -u | wc -l)
+  fi
+fi
+if [ "${TP_SIZE:-1}" -gt 1 ] 2>/dev/null; then
+  VLLM_CMD_ARGS+=(--tensor-parallel-size "$TP_SIZE")
+  echo "Using $TP_SIZE GPUs (tensor parallel)"
+fi
 
 # Tool calling. The parser must match the model's own tool-call format, so it is guessed
 # from the model name when not given. An unknown family gets no parser rather than a wrong
