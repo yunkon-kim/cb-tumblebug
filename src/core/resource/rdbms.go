@@ -907,6 +907,56 @@ func validateRDBMSCreateRequest(meta spiderRDBMSMetaInfo, req model.RDBMSCreateR
 		log.Info().Msgf("validateRDBMSCreateRequest: %s uses auto-scaling storage; user-provided storageSize (%dGB) will be ignored", providerName, req.StorageSize)
 	}
 
+	// Validate DBInstanceSpec against live capability DBSpecOptions
+	if len(meta.DBSpecOptions) > 0 && req.DBInstanceSpec != "" {
+		matched := false
+		for _, spec := range meta.DBSpecOptions {
+			if strings.EqualFold(spec, req.DBInstanceSpec) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			err := fmt.Errorf("dbInstanceSpec '%s' is not supported for %s with engine '%s' (available specs: %v)", req.DBInstanceSpec, providerName, req.DBEngine, meta.DBSpecOptions)
+			log.Warn().Err(err).Msg("Validation error in RDBMS create request")
+			return err
+		}
+	}
+
+	// Validate DBEngineVersion against live capability SupportedVersions
+	if len(meta.SupportedVersions) > 0 && req.DBEngineVersion != "" {
+		matched := false
+		for _, v := range meta.SupportedVersions {
+			if strings.EqualFold(v, req.DBEngineVersion) ||
+				strings.HasPrefix(strings.ToLower(req.DBEngineVersion), strings.ToLower(v)) ||
+				strings.HasPrefix(strings.ToLower(v), strings.ToLower(req.DBEngineVersion)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			err := fmt.Errorf("dbEngineVersion '%s' is not supported for %s with engine '%s' (supported versions: %v)", req.DBEngineVersion, providerName, req.DBEngine, meta.SupportedVersions)
+			log.Warn().Err(err).Msg("Validation error in RDBMS create request")
+			return err
+		}
+	}
+
+	// Validate StorageType against live capability StorageTypeOptions
+	if meta.SupportsStorageTypeSelection && len(meta.StorageTypeOptions) > 0 && req.StorageType != "" {
+		matched := false
+		for _, st := range meta.StorageTypeOptions {
+			if strings.EqualFold(st, req.StorageType) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			err := fmt.Errorf("storageType '%s' is not supported for %s with engine '%s' (available storage types: %v)", req.StorageType, providerName, req.DBEngine, meta.StorageTypeOptions)
+			log.Warn().Err(err).Msg("Validation error in RDBMS create request")
+			return err
+		}
+	}
+
 	// General storage size range check
 	if meta.SupportsStorageSizeConfiguration {
 		if req.StorageSize < meta.StorageSizeRangeGB.Min || (meta.StorageSizeRangeGB.Max > 0 && req.StorageSize > meta.StorageSizeRangeGB.Max) {

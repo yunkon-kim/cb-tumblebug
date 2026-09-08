@@ -476,6 +476,8 @@ dbms:
         name: SSD (automatic)
         description: "NCP G3 automatically applies SSD storage (starts at 10GB and auto-scales by 10GB increments up to 6000GB). Storage size and type are not user-configurable."
         recommendationLevel: standard
+        minStorageSize: 10
+        maxStorageSize: 6000
         note: "Verified: 2026-08-03 (Spider storage-type-test SKIP). NCP G3 applies SSD automatically; storage type cannot be specified."
         
     dbmsRequirements:
@@ -529,6 +531,7 @@ dbms:
         recommendationLevel: standard
         requiresIops: false
         minStorageSize: 20
+        maxStorageSize: 2048
         note: "Verified: 2026-08-03 (Spider storage-type-test, elapsed 10m7s)"
         
       General_SSD:
@@ -537,6 +540,7 @@ dbms:
         recommendationLevel: recommended
         requiresIops: false
         minStorageSize: 20
+        maxStorageSize: 2048
         note: "Verified: 2026-08-03 (Spider storage-type-test, elapsed 11m7s)"
         
     dbmsRequirements:
