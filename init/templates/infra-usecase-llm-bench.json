@@ -12,11 +12,10 @@
           "role": "observability"
         },
         "description": "CPU-based observability node (e2-standard-8, 8 vCPU, 32 GiB)",
-        "specId": "gcp+us-west3+e2-standard-8",
+        "specId": "gcp+europe-west1+e2-standard-8",
         "imageId": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20260820",
         "rootDiskType": "pd-standard",
-        "rootDiskSize": 200,
-        "zone": "us-west3-a"
+        "rootDiskSize": 200
       },
       {
         "name": "alibaba-nvidia-a10",
@@ -25,11 +24,11 @@
           "accelerator": "gpu"
         },
         "description": "NVIDIA A10 GPU node on Alibaba Cloud (ecs.gn7i-2x.8xlarge, 2x A10 24GB)",
-        "specId": "alibaba+cn-guangzhou+ecs.gn7i-2x.8xlarge",
+        "specId": "alibaba+ap-southeast-1+ecs.gn7i-2x.8xlarge",
         "imageId": "ubuntu_22_04_x64_20G_alibase_20260810.vhd",
         "rootDiskType": "cloud_auto",
         "rootDiskSize": 200,
-        "zone": "cn-guangzhou-b"
+        "zone": "ap-southeast-1b"
       },
       {
         "name": "alibaba-nvidia-l20",
@@ -38,11 +37,11 @@
           "accelerator": "gpu"
         },
         "description": "NVIDIA L20 GPU node on Alibaba Cloud (ecs.gn8is.4xlarge, 1x L20 48GB)",
-        "specId": "alibaba+cn-wulanchabu+ecs.gn8is.4xlarge",
+        "specId": "alibaba+ap-southeast-1+ecs.gn8is.4xlarge",
         "imageId": "ubuntu_22_04_x64_20G_alibase_20260810.vhd",
         "rootDiskType": "cloud_auto",
         "rootDiskSize": 200,
-        "zone": "cn-wulanchabu-b"
+        "zone": "ap-southeast-1c"
       },
       {
         "name": "aws-nvidia-l4",

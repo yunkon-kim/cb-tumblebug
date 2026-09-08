@@ -87,7 +87,8 @@ ROCM_VERSION="7.2.2"
 ROCM_BUILD="7.2.2.70202-1"
 
 # Common apt-get options
-APT_OPTS=(-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold")
+# Lock timeout: unattended-upgrades often holds dpkg right after boot
+APT_OPTS=(-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=600)
 APT_INSTALL=(sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_OPTS[@]}")
 APT_OPTS_STR="-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
@@ -172,7 +173,7 @@ done
 # Ensure lspci is available (not included in minimal OS images)
 if ! command -v lspci &>/dev/null; then
     echo "Installing pciutils (lspci not found, common on minimal images)..."
-    sudo apt-get update -qq && "${APT_INSTALL[@]}" pciutils
+    sudo apt-get -o DPkg::Lock::Timeout=600 update -qq && "${APT_INSTALL[@]}" pciutils
 fi
 
 if [ -z "$GPU_TYPE" ]; then
@@ -268,7 +269,7 @@ if [ "$GPU_TYPE" = "nvidia" ]; then
     echo ""
     echo "========== DKMS Prerequisites =========="
 
-    sudo apt-get update -qq
+    sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 
     # Blacklist nouveau
     if ! grep -q "blacklist nouveau" /etc/modprobe.d/blacklist-nouveau.conf 2>/dev/null; then
@@ -348,7 +349,7 @@ EOF
     fi
     sudo dpkg -i --force-confdef --force-confold "$KEYRING_FILE" 2>/dev/null || sudo dpkg -i "$KEYRING_FILE"
     rm -f "$KEYRING_FILE"
-    sudo apt-get update -qq
+    sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 
     # ----------------------------------------------------------
     # Detect vGPU vs bare-metal/passthrough
@@ -765,7 +766,7 @@ CUDA_ENV
         curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
             sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
             sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
-        sudo apt-get update -qq
+        sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 
         echo "Installing nvidia-container-toolkit..."
         set +e
@@ -852,7 +853,7 @@ elif [ "$GPU_TYPE" = "amd" ]; then
     # ----------------------------------------------------------
     echo ""
     echo "========== Installing Dependencies =========="
-    sudo apt-get update -qq
+    sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
     "${APT_INSTALL[@]}" \
         "linux-headers-$(uname -r)" \
         "linux-modules-extra-$(uname -r)" \

@@ -84,20 +84,20 @@ fi
 # Install system dependencies
 echo "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
+sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 
 # Use Python 3.12 for both NVIDIA and AMD:
 #   - AMD pre-built ROCm wheels are Python 3.12 only (cp312)
 #   - vLLM 0.23+ docs quickstart recommends Python 3.12 for NVIDIA too
 # Ubuntu 22.04 ships Python 3.10 by default; add deadsnakes PPA when needed.
-sudo apt-get install -y python3-pip curl jq > /dev/null 2>&1
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y python3-pip curl jq > /dev/null 2>&1
 if ! apt-cache show python3.12 > /dev/null 2>&1; then
   echo "  Adding deadsnakes PPA for python3.12..."
-  sudo apt-get install -y software-properties-common > /dev/null 2>&1
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y software-properties-common > /dev/null 2>&1
   sudo add-apt-repository -y ppa:deadsnakes/ppa > /dev/null 2>&1
-  sudo apt-get update -qq
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
 fi
-sudo apt-get install -y python3.12 python3.12-venv python3.12-dev > /dev/null 2>&1
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y python3.12 python3.12-venv python3.12-dev > /dev/null 2>&1
 PYTHON_BIN="python3.12"
 echo "Using $($PYTHON_BIN --version)"
 
@@ -263,7 +263,7 @@ if [ "$GPU_TYPE" = "nvidia" ] && ! command -v nvcc &>/dev/null && ! [ -x /usr/lo
       -o "$_kring" 2>/dev/null && \
       sudo dpkg -i --force-confdef --force-confold "$_kring" 2>/dev/null || true
     rm -f "$_kring"
-    sudo apt-get update -qq
+    sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
   fi
   # Pick the latest available cuda-nvcc package.
   # NVIDIA repo uses versioned names (cuda-nvcc-12-9) not just "cuda-nvcc".
@@ -272,7 +272,7 @@ if [ "$GPU_TYPE" = "nvidia" ] && ! command -v nvcc &>/dev/null && ! [ -x /usr/lo
   [ -z "$_nvcc_pkg" ] && _nvcc_pkg="cuda-nvcc"  # last-resort fallback
   echo "  Installing $_nvcc_pkg..."
   set +e
-  sudo apt-get install -y --no-install-recommends "$_nvcc_pkg" 2>&1 | tail -5
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "$_nvcc_pkg" 2>&1 | tail -5
   _nvcc_exit=${PIPESTATUS[0]}
   set -e
   if [ $_nvcc_exit -ne 0 ]; then
@@ -292,7 +292,7 @@ if [ "$GPU_TYPE" = "nvidia" ] && ! command -v nvcc &>/dev/null && ! [ -x /usr/lo
   fi
   echo "  Installing $_curand_pkg (curand.h required by FlashInfer sampling JIT)..."
   set +e
-  sudo apt-get install -y --no-install-recommends "$_curand_pkg" 2>&1 | tail -3
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "$_curand_pkg" 2>&1 | tail -3
   _curand_exit=$?
   set -e
   if [ $_curand_exit -ne 0 ]; then
